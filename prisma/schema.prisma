@@ -1,0 +1,116 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Container {
+  id              String   @id @default(cuid())
+  containerId     String   @unique // Docker container ID
+  name            String
+  image           String
+  status          String   // running, stopped, paused, etc.
+  ports           String?  // JSON string of port mappings
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  metrics         ContainerMetric[]
+  scans           Scan[]
+  alerts          Alert[]
+  logs            ContainerLog[]
+}
+
+model ContainerMetric {
+  id           String   @id @default(cuid())
+  containerId  String
+  container    Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  
+  cpuUsage     Float    // CPU usage percentage
+  memUsage     Float    // Memory usage percentage
+  memLimit     Float?   // Memory limit in MB
+  netIn        Float    // Network input in bytes
+  netOut       Float    // Network output in bytes
+  diskRead     Float?   // Disk read in bytes
+  diskWrite    Float?   // Disk write in bytes
+  timestamp    DateTime @default(now())
+  
+  @@index([containerId, timestamp])
+}
+
+model Alert {
+  id        String   @id @default(cuid())
+  severity  String   // CRITICAL, HIGH, MEDIUM, LOW, INFO
+  message   String
+  source    String   // docker, trivy, yara, system
+  containerId String?
+  container Container? @relation(fields: [containerId], references: [id], onDelete: SetNull)
+  timestamp DateTime @default(now())
+  resolved  Boolean  @default(false)
+  
+  @@index([severity, timestamp])
+  @@index([containerId])
+}
+
+model Scan {
+  id          String   @id @default(cuid())
+  containerId String
+  container   Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+  
+  scanType    String   // trivy, yara
+  status      String   // running, completed, failed
+  result      String?  // JSON string of scan results
+  summary     String?  // Brief summary of findings
+  timestamp   DateTime @default(now())
+  duration    Int?     // Scan duration in milliseconds
+  
+  @@index([containerId, scanType, timestamp])
+}
+
+model ContainerLog {
+  id          String   @id @default(cuid())
+  containerId String
+  container   Container @relation(fields: [containerId], references: [id], onDelete: Cascade)
+
+  logLevel    String   // INFO, WARN, ERROR, DEBUG
+  message     String   // Log message content
+  timestamp   DateTime @default(now())
+  source      String?  // stdout, stderr
+
+  @@index([containerId, timestamp])
+  @@index([logLevel, timestamp])
+}
+
+model SystemMetric {
+  id            String   @id @default(cuid())
+
+  cpuUsage      Float    // Host CPU usage percentage
+  cpuLoad1      Float    // 1-minute load average
+  cpuLoad5      Float    // 5-minute load average
+  cpuLoad15     Float    // 15-minute load average
+
+  ramUsed       Float    // RAM used in MB
+  ramFree       Float    // RAM free in MB
+  ramUsagePercent Float  // RAM usage percentage
+  ramTotal      Float    // Total RAM in MB
+
+  diskUsed      Float    // Disk used in MB
+  diskFree      Float    // Disk free in MB
+  diskUsagePercent Float // Disk usage percentage
+  diskTotal     Float    // Total disk in MB
+
+  networkIn     Float    // Network input in bytes
+  networkOut    Float    // Network output in bytes
+
+  timestamp     DateTime @default(now())
+
+  @@index([timestamp])
+}

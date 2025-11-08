@@ -40,7 +40,12 @@ async function createCustomServer() {
       }
     });
 
-    setupSocket(io);
+    const socketUtils = setupSocket(io);
+
+    // Make Socket.IO available to API routes
+    if (typeof global !== 'undefined') {
+      (global as any).socketUtils = socketUtils;
+    }
 
     // Start the server
     server.listen(currentPort, hostname, () => {

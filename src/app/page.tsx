@@ -19,7 +19,7 @@ const DashboardContainerList = lazy(() => import('./dashboard-container-list'))
 
 // Import new container charts
 const ContainerCPUChart = dynamic(() => import('@/components/ui/ContainerCPUChart').then(mod => mod.ContainerCPUChart), { ssr: false })
-const ContainerMemoryChart = dynamic(() => import('@/components/ui/ContainerMemoryChart').then(mod => mod.ContainerMemoryChart), { ssr: false })
+const ContainerMemoryChart = dynamic(() => import('@/components/ui/ContainerMemoryChart'), { ssr: false })
 
 // Static imports for recharts (they're not that heavy)
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts'
@@ -70,8 +70,8 @@ const Dashboard = memo(function Dashboard() {
     endDate: ''
   })
 
-  // Container metrics state
-  const [containerMetrics, setContainerMetrics] = useState<any[]>([])
+  // Container metrics state - store per container
+  const [containerMetrics, setContainerMetrics] = useState<Record<string, any[]>>({})
   const [containerMetricsLoading, setContainerMetricsLoading] = useState(false)
 
   // System metrics state for graphs
@@ -149,6 +149,26 @@ const Dashboard = memo(function Dashboard() {
 
       subscribeAlerts()
       subscribeScanResults()
+
+      socket.on('system_metrics', (newMetrics) => {
+        setCurrentSystemMetrics({
+          cpuUsage: newMetrics.cpuUsage,
+          ramUsed: newMetrics.ramUsed / 1024, // Convert to GB
+          ramFree: newMetrics.ramFree / 1024, // Convert to GB
+          ramUsagePercent: newMetrics.ramUsagePercent,
+          ramTotal: newMetrics.ramTotal / 1024, // Convert to GB
+          networkIn: newMetrics.networkIn / (1024 * 1024), // Convert to MB/s
+          networkOut: newMetrics.networkOut / (1024 * 1024), // Convert to MB/s
+          networkTotal: (newMetrics.networkIn + newMetrics.networkOut) / (1024 * 1024),
+          diskUsed: newMetrics.diskUsed / 1024, // Convert to GB
+          diskFree: newMetrics.diskFree / 1024, // Convert to GB
+          diskUsagePercent: newMetrics.diskUsagePercent,
+          diskTotal: newMetrics.diskTotal / 1024, // Convert to GB
+          loadAverage1: newMetrics.cpuLoad1,
+          loadAverage5: newMetrics.cpuLoad5
+        })
+        setLastUpdated(new Date())
+      })
     }
 
     return () => {
@@ -156,6 +176,7 @@ const Dashboard = memo(function Dashboard() {
         socket.off('alert_push')
         socket.off('scan_result')
         socket.off('container_status_change')
+        socket.off('system_metrics')
       }
     }
   }, [socket, subscribeAlerts, subscribeScanResults])
@@ -229,44 +250,132 @@ const Dashboard = memo(function Dashboard() {
     }
   }
   
-  // Fetch container metrics for graphs with retry logic
-  const fetchContainerMetrics = async (retryCount = 0) => {
+  // Fetch container metrics for graphs with retry logic - aggregates all running containers
+  const fetchContainerMetrics = useCallback(async (retryCount = 0) => {
     try {
       setContainerMetricsLoading(true)
       const runningContainers = (dashboardData?.containers?.list || []).filter(c => c.status === 'running')
 
       if (runningContainers.length === 0) {
-        setContainerMetrics([])
+        setContainerMetrics({})
+        setContainerMetricsLoading(false)
         return
       }
 
-      // Fetch metrics from the first running container (or could aggregate all)
-      const sampleContainer = runningContainers[0]
-      const response = await fetch(`/api/containers/${sampleContainer.containerId}/metrics?limit=100`)
+      // Fetch metrics from ALL running containers - keep separate per container
+      const metricsPromises = runningContainers.map(async (container) => {
+        try {
+          // Use containerId (Docker ID) for API endpoint
+          const dockerContainerId = container.containerId || container.id
+          if (!dockerContainerId) {
+            console.warn(`Container ${container.name} has no containerId`)
+            return { containerName: container.name, metrics: [] }
+          }
 
-      if (response.ok) {
-        const data = await response.json()
-        setContainerMetrics(data)
+          // Fetch metrics from last 24 hours
+          const now = new Date()
+          const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+          const fromParam = twentyFourHoursAgo.toISOString()
+          
+          const response = await fetch(`/api/containers/${dockerContainerId}/metrics?from=${fromParam}&limit=1000`, {
+            cache: 'no-store',
+            headers: {
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              'Pragma': 'no-cache'
+            }
+          })
 
-        // If we got data on retry, show success feedback
+          if (response.ok) {
+            const data = await response.json()
+            if (data && data.length > 0) {
+              console.log(`Fetched ${data.length} metrics for container ${container.name}`)
+              
+              // Filter and process metrics for last 24 hours, aggregate by minute
+              const now = new Date()
+              const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+              
+              const metricsMap = new Map<string, any>()
+              
+              data
+                .filter((metric: any) => {
+                  const metricTime = new Date(metric.timestamp).getTime()
+                  return metricTime >= twentyFourHoursAgo.getTime()
+                })
+                .forEach((metric: any) => {
+                  const timestamp = new Date(metric.timestamp).getTime()
+                  const timeKey = Math.floor(timestamp / 60000) * 60000 // Round to nearest minute
+                  
+                  if (!metricsMap.has(timeKey.toString())) {
+                    metricsMap.set(timeKey.toString(), {
+                      timestamp: new Date(timeKey).toISOString(),
+                      cpuUsage: 0,
+                      memUsage: 0,
+                      count: 0
+                    })
+                  }
+                  
+                  const aggregated = metricsMap.get(timeKey.toString())
+                  aggregated.cpuUsage += metric.cpuUsage || 0
+                  aggregated.memUsage += metric.memUsage || 0
+                  aggregated.count += 1
+                })
+              
+              const processedMetrics = Array.from(metricsMap.values())
+                .map(metric => ({
+                  timestamp: metric.timestamp,
+                  cpuUsage: metric.count > 0 ? metric.cpuUsage / metric.count : 0,
+                  memUsage: metric.count > 0 ? metric.memUsage / metric.count : 0
+                }))
+                .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+              
+              return { containerName: container.name, metrics: processedMetrics }
+            } else {
+              console.log(`No metrics data returned for container ${container.name}`)
+            }
+          } else {
+            console.warn(`Failed to fetch metrics for container ${container.name}: ${response.status}`)
+          }
+          return { containerName: container.name, metrics: [] }
+        } catch (error) {
+          console.error(`Error fetching metrics for container ${container.name}:`, error)
+          return { containerName: container.name, metrics: [] }
+        }
+      })
+
+      const allContainerMetrics = await Promise.all(metricsPromises)
+      
+      // Convert to object with container name as key
+      const metricsByContainer: Record<string, any[]> = {}
+      allContainerMetrics.forEach(({ containerName, metrics }) => {
+        if (metrics.length > 0) {
+          metricsByContainer[containerName] = metrics
+        }
+      })
+      
+      console.log(`Fetched metrics from ${Object.keys(metricsByContainer).length} containers`)
+      
+      if (Object.keys(metricsByContainer).length > 0) {
+        // Merge with existing data to prevent flickering
+        setContainerMetrics(prev => {
+          const merged = { ...prev }
+          Object.keys(metricsByContainer).forEach(containerName => {
+            merged[containerName] = metricsByContainer[containerName]
+          })
+          return merged
+        })
         if (retryCount > 0) {
           console.log(`Successfully loaded container metrics after ${retryCount} retries`)
         }
       } else {
-        // API call failed - if this is first attempt, retry after delay
+        // If no metrics found, try retry but don't clear existing data
         if (retryCount === 0) {
-          console.log(`Metrics API failed (${response.status}), retrying in 5 seconds...`)
+          console.log('No metrics found, retrying in 5 seconds...')
           setTimeout(() => fetchContainerMetrics(1), 5000)
           return
-        } else if (retryCount < 3) {
-          console.log(`Metrics API retry ${retryCount} failed, retrying in ${retryCount * 10} seconds...`)
-          setTimeout(() => fetchContainerMetrics(retryCount + 1), retryCount * 10000)
-          return
+        } else if (retryCount >= 3) {
+          // Only clear if all retries failed
+          setContainerMetrics({})
         }
-
-        // All retries failed
-        console.error(`Failed to fetch container metrics after ${retryCount} retries`)
-        setContainerMetrics([])
       }
     } catch (error) {
       console.error(`Error fetching container metrics (attempt ${retryCount + 1}):`, error)
@@ -277,12 +386,13 @@ const Dashboard = memo(function Dashboard() {
         console.log(`Network error, retrying in ${delay / 1000} seconds...`)
         setTimeout(() => fetchContainerMetrics(retryCount + 1), delay)
       } else {
-        setContainerMetrics([])
+        setContainerMetrics({})
+        setContainerMetricsLoading(false)
       }
     } finally {
       setContainerMetricsLoading(false)
     }
-  }
+  }, [dashboardData?.containers?.list])
 
   // Handle fetch data
   const handleFetchData = async () => {
@@ -373,6 +483,24 @@ const Dashboard = memo(function Dashboard() {
     handleFetchData()
   }, [])
 
+  // Auto-refresh container metrics when containers data changes
+  useEffect(() => {
+    if (dashboardData?.containers?.list && dashboardData.containers.list.length > 0) {
+      fetchContainerMetrics()
+    }
+  }, [dashboardData?.containers?.list, fetchContainerMetrics])
+
+  // Real-time auto-refresh for container metrics (every 1 minute)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (dashboardData?.containers?.list && dashboardData.containers.list.length > 0 && !containerMetricsLoading) {
+        fetchContainerMetrics()
+      }
+    }, 60000) // Refresh every 1 minute (60 seconds)
+
+    return () => clearInterval(interval)
+  }, [dashboardData?.containers?.list, containerMetricsLoading, fetchContainerMetrics])
+
   // Handle URL tab parameter
   useEffect(() => {
     const tab = searchParams.get('tab')
@@ -436,76 +564,6 @@ const Dashboard = memo(function Dashboard() {
     }
   }
 
-  // System metrics simulation
-  const getSystemMetrics = () => {
-    const now = Date.now() / 1000 // Unix timestamp
-
-    // Simulate CPU usage with some variation based on time
-    const cpuBaseLoad = 15 + Math.sin(now * 0.001) * 8 + Math.random() * 3
-    const cpuUsage = Math.max(5, Math.min(90, cpuBaseLoad))
-
-    // Simulate RAM usage (assume 16GB total)
-    const totalRAM = 16
-    const ramBaseUsage = 25 + Math.sin(now * 0.0005) * 6 + Math.random() * 2
-    const ramUsagePercent = Math.max(10, Math.min(85, ramBaseUsage))
-    const ramUsed = (totalRAM * ramUsagePercent) / 100
-    const ramFree = totalRAM - ramUsed
-
-    // Simulate network traffic
-    const networkBase = 1.5 + Math.sin(now * 0.002) * 0.8 + Math.random() * 0.3
-    const networkIn = Math.max(0.5, Math.min(4.5, networkBase))
-    const networkOut = networkIn * (0.7 + Math.random() * 0.3)
-
-    // Simulate disk usage (assume 500GB total)
-    const totalDisk = 500
-    const baseDisk = 140 + Math.sin(now * 0.0003) * 20 + Math.random() * 5
-    const diskUsed = Math.max(120, Math.min(380, baseDisk))
-    const diskFree = totalDisk - diskUsed
-    const diskUsagePercent = (diskUsed / totalDisk) * 100
-
-    // Load averages simulation
-    const load1 = 0.8 + Math.sin(now * 0.01) * 0.3 + Math.random() * 0.1
-    const load5 = 0.7 + Math.sin(now * 0.005) * 0.2 + Math.random() * 0.1
-
-    return {
-      cpuUsage: Math.round(cpuUsage),
-      ramUsed: Math.round(ramUsed * 10) / 10,
-      ramFree: Math.round(ramFree * 10) / 10,
-      ramUsagePercent: Math.round(ramUsagePercent),
-      ramTotal: totalRAM,
-      networkIn: Math.round(networkIn * 10) / 10,
-      networkOut: Math.round(networkOut * 10) / 10,
-      networkTotal: Math.round((networkIn + networkOut) * 10) / 10,
-      diskUsed: Math.round(diskUsed),
-      diskFree: Math.round(diskFree),
-      diskUsagePercent: Math.round(diskUsagePercent),
-      diskTotal: totalDisk,
-      loadAverage1: Math.round(load1 * 100) / 100,
-      loadAverage5: Math.round(load5 * 100) / 100
-    }
-  }
-
-  const [systemMetrics, setSystemMetrics] = useState({
-    cpuUsage: 15,
-    ramUsed: 6.4,
-    ramFree: 9.6,
-    ramUsagePercent: 40,
-    ramTotal: 16,
-    networkIn: 1.8,
-    networkOut: 1.4,
-    networkTotal: 3.2,
-    diskUsed: 140,
-    diskFree: 360,
-    diskUsagePercent: 28,
-    diskTotal: 500,
-    loadAverage1: 0.8,
-    loadAverage5: 0.7
-  })
-
-  useEffect(() => {
-    // Set dynamic system metrics after hydration to avoid SSR mismatch
-    setSystemMetrics(getSystemMetrics())
-  }, [])
 
   // Filtered containers for container list search
   const filteredContainerList = safeData.containers.list.filter(container => {
@@ -516,13 +574,62 @@ const Dashboard = memo(function Dashboard() {
     return name.includes(q) || image.includes(q) || id.includes(q)
   })
 
+  // Color palette for containers
+  const containerColors = [
+    '#a855f7', // purple
+    '#3b82f6', // blue
+    '#10b981', // emerald
+    '#f59e0b', // amber
+    '#ef4444', // red
+    '#06b6d4', // cyan
+    '#8b5cf6', // violet
+    '#ec4899', // pink
+    '#14b8a6', // teal
+    '#f97316', // orange
+  ]
+
   // Container Graph Components
   const ContainerCPUUsageGraph = memo(() => {
-    const processedMetrics = containerMetrics.map(metric => ({
-      ...metric,
-      time: new Date(metric.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      cpuUsagePercent: Math.round(metric.cpuUsage)
-    })).reverse()
+    const containerNames = Object.keys(containerMetrics)
+    const hasData = containerNames.length > 0
+
+    // Use useMemo to prevent re-rendering on every update
+    const allData = useMemo(() => {
+      if (!hasData) return []
+      
+      const data: any[] = []
+      const timeMap = new Map<string, any>()
+      
+      containerNames.forEach((containerName) => {
+        const metrics = containerMetrics[containerName] || []
+        
+        metrics.forEach((metric: any) => {
+          const time = new Date(metric.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+          const timestamp = new Date(metric.timestamp).getTime()
+          
+          if (!timeMap.has(time)) {
+            const newData: any = { time, timestamp }
+            containerNames.forEach(name => {
+              newData[name] = null
+            })
+            timeMap.set(time, newData)
+            data.push(newData)
+          }
+          
+          const existing = timeMap.get(time)
+          existing[containerName] = Math.round(metric.cpuUsage)
+        })
+      })
+
+      // Sort by timestamp
+      data.sort((a, b) => {
+        const timeA = new Date(`2000-01-01 ${a.time}`).getTime()
+        const timeB = new Date(`2000-01-01 ${b.time}`).getTime()
+        return timeA - timeB
+      })
+      
+      return data
+    }, [containerMetrics, containerNames.join(',')])
 
     return (
       <Card className="bg-gray-800 border-gray-700 text-white">
@@ -532,57 +639,110 @@ const Dashboard = memo(function Dashboard() {
             <span>Container CPU Usage</span>
           </CardTitle>
           <CardDescription className="text-gray-400">
-            Container CPU utilization over time
+            Container CPU utilization over the last 24 hours
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {containerMetricsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Activity className="h-8 w-8 animate-spin text-purple-400" />
-            </div>
-          ) : processedMetrics.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={processedMetrics}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
-                <XAxis
-                  dataKey="time"
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  axisLine={{ stroke: '#4b5563' }}
-                  tickLine={{ stroke: '#4b5563' }}
-                  interval="preserveStartEnd"
-                  minTickGap={40}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  axisLine={{ stroke: '#4b5563' }}
-                  tickLine={{ stroke: '#4b5563' }}
-                  domain={[0, 'dataMax + 10']}
-                  ticks={[0, 25, 50, 75, 100]}
-                />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#1f2937',
-                      border: '1px solid #374151',
-                      borderRadius: '8px',
-                      color: '#f3f4f6'
-                    }}
-                    labelFormatter={(value: any) => `${value}`}
-                    formatter={(value: any) => `${value}% CPU Usage`}
-                  />
-                <Line
-                  type="monotone"
-                  dataKey="cpuUsagePercent"
-                  stroke="#a855f7"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: "#a855f7", stroke: "#1f2937", strokeWidth: 2 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+          {hasData ? (
+            <>
+              <div className="relative">
+                {containerMetricsLoading && (
+                  <div className="absolute top-2 right-2 z-10 flex items-center space-x-2 bg-gray-800/90 backdrop-blur-sm px-2 py-1 rounded-md border border-gray-700">
+                    <Activity className="h-3 w-3 animate-spin text-purple-400" />
+                    <span className="text-xs text-gray-400">Updating...</span>
+                  </div>
+                )}
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={allData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
+                    <XAxis
+                      dataKey="time"
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      axisLine={{ stroke: '#4b5563' }}
+                      tickLine={{ stroke: '#4b5563' }}
+                      interval="preserveStartEnd"
+                      minTickGap={40}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      axisLine={{ stroke: '#4b5563' }}
+                      tickLine={{ stroke: '#4b5563' }}
+                      domain={[0, 'dataMax + 10']}
+                      ticks={[0, 25, 50, 75, 100]}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#1f2937',
+                        border: '1px solid #374151',
+                        borderRadius: '8px',
+                        color: '#f3f4f6'
+                      }}
+                      labelFormatter={(value: any) => `Time: ${value}`}
+                      formatter={(value: any, name: any) => {
+                        if (value === null || value === undefined) return null
+                        return [`${value}%`, name]
+                      }}
+                    />
+                    <Legend 
+                      wrapperStyle={{ paddingTop: '20px' }}
+                      iconType="line"
+                      formatter={(value: any) => <span style={{ color: '#9ca3af', fontSize: '12px' }}>{value}</span>}
+                    />
+                    {containerNames.map((containerName, index) => (
+                      <Line
+                        key={`cpu-${containerName}`}
+                        type="monotone"
+                        dataKey={containerName}
+                        stroke={containerColors[index % containerColors.length]}
+                        strokeWidth={2}
+                        dot={false}
+                        connectNulls={true}
+                        activeDot={{ r: 4, stroke: "#1f2937", strokeWidth: 2 }}
+                        animationDuration={0}
+                        isAnimationActive={false}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Container legend */}
+              <div className="mt-4 flex flex-wrap gap-3 text-xs">
+                {containerNames.map((containerName, index) => {
+                  const metrics = containerMetrics[containerName] || []
+                  const lastMetric = metrics[metrics.length - 1]
+                  const currentValue = lastMetric ? Math.round(lastMetric.cpuUsage) : 0
+                  return (
+                    <div key={containerName} className="flex items-center space-x-2">
+                      <div 
+                        className="w-3 h-3 rounded-full" 
+                        style={{ backgroundColor: containerColors[index % containerColors.length] }}
+                      />
+                      <span className="text-gray-300">{containerName}:</span>
+                      <span className="text-gray-400">{currentValue}%</span>
+                    </div>
+                  )
+                })}
+                {containerMetricsLoading && (
+                  <span className="text-gray-500 ml-2">(updating...)</span>
+                )}
+              </div>
+            </>
           ) : (
             <div className="text-center py-8">
+              <Activity className="h-12 w-12 text-gray-500 mx-auto mb-4 opacity-50" />
               <p className="text-gray-400">No container metrics available</p>
-              <p className="text-sm text-gray-500 mt-1">Container metrics will appear when available</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {safeData?.containers?.running > 0 
+                  ? 'Metrics collector may not be running. Please start the metrics collector to see real-time data.'
+                  : 'Start a container to see metrics here'}
+              </p>
+              {safeData?.containers?.running > 0 && (
+                <p className="text-xs text-gray-600 mt-2">
+                  Running containers: {safeData.containers.running} | 
+                  Try running: <code className="text-xs bg-gray-700 px-2 py-1 rounded">node metrics-collector.mjs</code>
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -591,11 +751,46 @@ const Dashboard = memo(function Dashboard() {
   })
 
   const ContainerRAMUsageGraph = memo(() => {
-    const processedMetrics = containerMetrics.map(metric => ({
-      ...metric,
-      time: new Date(metric.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      memUsagePercent: Math.round(metric.memUsage)
-    })).reverse()
+    const containerNames = Object.keys(containerMetrics)
+    const hasData = containerNames.length > 0
+
+    // Use useMemo to prevent re-rendering on every update
+    const allData = useMemo(() => {
+      if (!hasData) return []
+      
+      const data: any[] = []
+      const timeMap = new Map<string, any>()
+      
+      containerNames.forEach((containerName) => {
+        const metrics = containerMetrics[containerName] || []
+        
+        metrics.forEach((metric: any) => {
+          const time = new Date(metric.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+          const timestamp = new Date(metric.timestamp).getTime()
+          
+          if (!timeMap.has(time)) {
+            const newData: any = { time, timestamp }
+            containerNames.forEach(name => {
+              newData[name] = null
+            })
+            timeMap.set(time, newData)
+            data.push(newData)
+          }
+          
+          const existing = timeMap.get(time)
+          existing[containerName] = Math.round(metric.memUsage)
+        })
+      })
+
+      // Sort by timestamp
+      data.sort((a, b) => {
+        const timeA = new Date(`2000-01-01 ${a.time}`).getTime()
+        const timeB = new Date(`2000-01-01 ${b.time}`).getTime()
+        return timeA - timeB
+      })
+      
+      return data
+    }, [containerMetrics, containerNames.join(',')])
 
     return (
       <Card className="bg-gray-800 border-gray-700 text-white">
@@ -605,57 +800,109 @@ const Dashboard = memo(function Dashboard() {
             <span>Container Memory Usage</span>
           </CardTitle>
           <CardDescription className="text-gray-400">
-            Container memory utilization over time
+            Container memory utilization over the last 24 hours
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {containerMetricsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Bug className="h-8 w-8 animate-spin text-emerald-400" />
-            </div>
-          ) : processedMetrics.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={processedMetrics}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
-                <XAxis
-                  dataKey="time"
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  axisLine={{ stroke: '#4b5563' }}
-                  tickLine={{ stroke: '#4b5563' }}
-                  interval="preserveStartEnd"
-                  minTickGap={40}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: '#9ca3af' }}
-                  axisLine={{ stroke: '#4b5563' }}
-                  tickLine={{ stroke: '#4b5563' }}
-                  domain={[0, 'dataMax + 10']}
-                  ticks={[0, 25, 50, 75, 100]}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1f2937',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                    color: '#f3f4f6'
-                  }}
-                  labelFormatter={(value: any) => `${value}`}
-                  formatter={(value: any) => `${value}%`}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="memUsagePercent"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: "#10b981", stroke: "#1f2937", strokeWidth: 2 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+          {hasData ? (
+            <>
+              <div className="relative">
+                {containerMetricsLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-gray-800/50 backdrop-blur-sm z-10 rounded-lg">
+                    <Bug className="h-6 w-6 animate-spin text-emerald-400" />
+                  </div>
+                )}
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={allData} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
+                    <XAxis
+                      dataKey="time"
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      axisLine={{ stroke: '#4b5563' }}
+                      tickLine={{ stroke: '#4b5563' }}
+                      interval="preserveStartEnd"
+                      minTickGap={40}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10, fill: '#9ca3af' }}
+                      axisLine={{ stroke: '#4b5563' }}
+                      tickLine={{ stroke: '#4b5563' }}
+                      domain={[0, 'dataMax + 10']}
+                      ticks={[0, 25, 50, 75, 100]}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#1f2937',
+                        border: '1px solid #374151',
+                        borderRadius: '8px',
+                        color: '#f3f4f6'
+                      }}
+                      labelFormatter={(value: any) => `Time: ${value}`}
+                      formatter={(value: any, name: any) => {
+                        if (value === null || value === undefined) return null
+                        return [`${value}%`, name]
+                      }}
+                    />
+                    <Legend 
+                      wrapperStyle={{ paddingTop: '20px' }}
+                      iconType="line"
+                      formatter={(value: any) => <span style={{ color: '#9ca3af', fontSize: '12px' }}>{value}</span>}
+                    />
+                    {containerNames.map((containerName, index) => (
+                      <Line
+                        key={`ram-${containerName}`}
+                        type="monotone"
+                        dataKey={containerName}
+                        stroke={containerColors[index % containerColors.length]}
+                        strokeWidth={2}
+                        dot={false}
+                        connectNulls={true}
+                        activeDot={{ r: 4, stroke: "#1f2937", strokeWidth: 2 }}
+                        animationDuration={0}
+                        isAnimationActive={false}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Container legend */}
+              <div className="mt-4 flex flex-wrap gap-3 text-xs">
+                {containerNames.map((containerName, index) => {
+                  const metrics = containerMetrics[containerName] || []
+                  const lastMetric = metrics[metrics.length - 1]
+                  const currentValue = lastMetric ? Math.round(lastMetric.memUsage) : 0
+                  return (
+                    <div key={containerName} className="flex items-center space-x-2">
+                      <div 
+                        className="w-3 h-3 rounded-full" 
+                        style={{ backgroundColor: containerColors[index % containerColors.length] }}
+                      />
+                      <span className="text-gray-300">{containerName}:</span>
+                      <span className="text-gray-400">{currentValue}%</span>
+                    </div>
+                  )
+                })}
+                {containerMetricsLoading && (
+                  <span className="text-gray-500 ml-2">(updating...)</span>
+                )}
+              </div>
+            </>
           ) : (
             <div className="text-center py-8">
+              <Bug className="h-12 w-12 text-gray-500 mx-auto mb-4 opacity-50" />
               <p className="text-gray-400">No container metrics available</p>
-              <p className="text-sm text-gray-500 mt-1">Container metrics will appear when available</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {safeData?.containers?.running > 0 
+                  ? 'Metrics collector may not be running. Please start the metrics collector to see real-time data.'
+                  : 'Start a container to see metrics here'}
+              </p>
+              {safeData?.containers?.running > 0 && (
+                <p className="text-xs text-gray-600 mt-2">
+                  Running containers: {safeData.containers.running} | 
+                  Try running: <code className="text-xs bg-gray-700 px-2 py-1 rounded">node metrics-collector.mjs</code>
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -680,6 +927,7 @@ const Dashboard = memo(function Dashboard() {
           const usage = Math.max(5, Math.min(95, baseUsage * peakMultiplier + Math.random() * 8))
           newData.push({
             time: time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            ts: time.getTime(),
             usage: Math.round(usage),
             fullTime: time
           })
@@ -702,8 +950,8 @@ const Dashboard = memo(function Dashboard() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={data} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
               <defs>
                 <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3}/>
@@ -712,12 +960,15 @@ const Dashboard = memo(function Dashboard() {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
               <XAxis
-                dataKey="time"
+                dataKey="ts"
                 tick={{ fontSize: 10, fill: '#9ca3af' }}
                 axisLine={{ stroke: '#4b5563' }}
                 tickLine={{ stroke: '#4b5563' }}
                 interval="preserveStartEnd"
                 minTickGap={40}
+                tickFormatter={(value) => {
+                  try { return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) } catch (e) { return value }
+                }}
               />
               <YAxis
                 tick={{ fontSize: 10, fill: '#9ca3af' }}
@@ -734,10 +985,7 @@ const Dashboard = memo(function Dashboard() {
                   color: '#f3f4f6'
                 }}
                 labelFormatter={(value: any) => {
-                  if (value) {
-                    return `${value}: ${data.find(point => point.time === value)?.usage || 0}%`;
-                  }
-                  return value;
+                  try { return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) } catch (e) { return value }
                 }}
                 formatter={() => 'CPU Usage'}
               />
@@ -747,6 +995,7 @@ const Dashboard = memo(function Dashboard() {
                 stroke="#06b6d4"
                 strokeWidth={2}
                 dot={false}
+                connectNulls={true}
                 activeDot={{ r: 4, fill: "#06b6d4", stroke: "#1f2937", strokeWidth: 2 }}
                 fill="url(#cpuGradient)"
                 animationDuration={2000}
@@ -787,6 +1036,7 @@ const Dashboard = memo(function Dashboard() {
           const usedGB = (usage / 100) * 16 // Assume 16GB total RAM
           newData.push({
             time: time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+            ts: time.getTime(),
             usage: Math.round(usage),
             usedGB: Math.round(usedGB * 10) / 10,
             freeGB: Math.round((16 - usedGB) * 10) / 10,
@@ -811,8 +1061,8 @@ const Dashboard = memo(function Dashboard() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={data} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={data} margin={{ top: 12, right: 24, left: 0, bottom: 8 }}>
               <defs>
                 <linearGradient id="ramGradient" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
@@ -821,12 +1071,15 @@ const Dashboard = memo(function Dashboard() {
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
               <XAxis
-                dataKey="time"
+                dataKey="ts"
                 tick={{ fontSize: 10, fill: '#9ca3af' }}
                 axisLine={{ stroke: '#4b5563' }}
                 tickLine={{ stroke: '#4b5563' }}
                 interval="preserveStartEnd"
                 minTickGap={40}
+                tickFormatter={(value) => {
+                  try { return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) } catch (e) { return value }
+                }}
               />
               <YAxis
                 tick={{ fontSize: 10, fill: '#9ca3af' }}
@@ -843,14 +1096,8 @@ const Dashboard = memo(function Dashboard() {
                     color: '#f3f4f6'
                   }}
                   labelFormatter={(value: any) => {
-                    if (value && data.length > 0) {
-                      const point = data.find(p => p.time === value);
-                      if (point) {
-                        return `${value}: ${point.usage}% (${point.usedGB}GB used)`;
-                      }
-                    }
-                    return value;
-                  }}
+                      try { return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) } catch (e) { return value }
+                    }}
                   formatter={() => 'RAM Usage'}
                 />
               <Line
@@ -859,6 +1106,7 @@ const Dashboard = memo(function Dashboard() {
                 stroke="#10b981"
                 strokeWidth={2}
                 dot={false}
+                connectNulls={true}
                 activeDot={{ r: 4, fill: "#10b981", stroke: "#1f2937", strokeWidth: 2 }}
                 fill="url(#ramGradient)"
                 animationDuration={2500}
@@ -1596,7 +1844,7 @@ const Dashboard = memo(function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-400">CPU Usage</p>
-                      <p className="text-2xl font-bold text-white">{systemMetrics.cpuUsage}%</p>
+                      <p className="text-2xl font-bold text-white">{currentSystemMetrics.cpuUsage}%</p>
                     </div>
                   </div>
                   <div className="text-right">
@@ -1604,11 +1852,11 @@ const Dashboard = memo(function Dashboard() {
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-green-400 rounded-full" />
-                        <span className="text-xs text-green-400 font-medium">{systemMetrics.loadAverage1}</span>
+                        <span className="text-xs text-green-400 font-medium">{currentSystemMetrics.loadAverage1}</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-green-400 rounded-full" />
-                        <span className="text-xs text-green-400 font-medium">{systemMetrics.loadAverage5}</span>
+                        <span className="text-xs text-green-400 font-medium">{currentSystemMetrics.loadAverage5}</span>
                       </div>
                     </div>
                   </div>
@@ -1628,19 +1876,19 @@ const Dashboard = memo(function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-400">RAM Usage</p>
-                      <p className="text-2xl font-bold text-white">{systemMetrics.ramUsed}GB</p>
+                      <p className="text-2xl font-bold text-white">{currentSystemMetrics.ramUsed}GB</p>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-slate-500 mb-1">Of {systemMetrics.ramTotal}GB</div>
+                    <div className="text-xs text-slate-500 mb-1">Of {currentSystemMetrics.ramTotal}GB</div>
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-green-400 rounded-full" />
-                        <span className="text-xs text-green-400 font-medium">{systemMetrics.ramUsagePercent}%</span>
+                        <span className="text-xs text-green-400 font-medium">{currentSystemMetrics.ramUsagePercent}%</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-green-400 rounded-full" />
-                        <span className="text-xs text-green-400 font-medium">{systemMetrics.ramFree}GB free</span>
+                        <span className="text-xs text-green-400 font-medium">{currentSystemMetrics.ramFree}GB free</span>
                       </div>
                     </div>
                   </div>
@@ -1660,7 +1908,7 @@ const Dashboard = memo(function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-400">Network In</p>
-                      <p className="text-2xl font-bold text-white">{systemMetrics.networkIn}MB/s</p>
+                      <p className="text-2xl font-bold text-white">{currentSystemMetrics.networkIn}MB/s</p>
                     </div>
                   </div>
                   <div className="text-right">
@@ -1668,11 +1916,11 @@ const Dashboard = memo(function Dashboard() {
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-blue-400 rounded-full" />
-                        <span className="text-xs text-blue-400 font-medium">{systemMetrics.networkOut}MB/s</span>
+                        <span className="text-xs text-blue-400 font-medium">{currentSystemMetrics.networkOut}MB/s</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-blue-400 rounded-full" />
-                        <span className="text-xs text-blue-400 font-medium">{systemMetrics.networkTotal}MB/s total</span>
+                        <span className="text-xs text-blue-400 font-medium">{currentSystemMetrics.networkTotal}MB/s total</span>
                       </div>
                     </div>
                   </div>
@@ -1692,19 +1940,19 @@ const Dashboard = memo(function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-slate-400">Disk Usage</p>
-                      <p className="text-2xl font-bold text-white">{systemMetrics.diskUsed}GB</p>
+                      <p className="text-2xl font-bold text-white">{currentSystemMetrics.diskUsed}GB</p>
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-xs text-slate-500 mb-1">Of {systemMetrics.diskTotal}GB</div>
+                    <div className="text-xs text-slate-500 mb-1">Of {currentSystemMetrics.diskTotal}GB</div>
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-purple-400 rounded-full" />
-                        <span className="text-xs text-purple-400 font-medium">{systemMetrics.diskUsagePercent}%</span>
+                        <span className="text-xs text-purple-400 font-medium">{currentSystemMetrics.diskUsagePercent}%</span>
                       </div>
                       <div className="flex items-center space-x-2">
                         <div className="w-2 h-2 bg-purple-400 rounded-full" />
-                        <span className="text-xs text-purple-400 font-medium">{systemMetrics.diskFree}GB free</span>
+                        <span className="text-xs text-purple-400 font-medium">{currentSystemMetrics.diskFree}GB free</span>
                       </div>
                     </div>
                   </div>
@@ -1729,8 +1977,8 @@ const Dashboard = memo(function Dashboard() {
             <div className="mb-8">
               <h3 className="text-lg font-semibold text-white mb-6">Container Performance</h3>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <ContainerCPUChart />
-                <ContainerMemoryChart />
+                <ContainerCPUUsageGraph />
+                <ContainerRAMUsageGraph />
               </div>
             </div>
           </TabsContent>

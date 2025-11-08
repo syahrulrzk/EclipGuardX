@@ -1,141 +1,207 @@
-# 🚀 Welcome to Z.ai Code Scaffold
 
-A modern, production-ready web application scaffold powered by cutting-edge technologies, designed to accelerate your development with [Z.ai](https://chat.z.ai)'s AI-powered coding assistance.
+# EclipGuardX
 
-## ✨ Technology Stack
+Panduan singkat untuk instalasi dan menjalankan EclipGuardX di server lain (Ubuntu / Debian).
 
-This scaffold provides a robust foundation built with:
+README ini fokus ke langkah praktis agar bisa deploy aplikasi Next.js + Socket.IO + Prisma pada server produksi sederhana.
 
-### 🎯 Core Framework
-- **⚡ Next.js 15** - The React framework for production with App Router
-- **📘 TypeScript 5** - Type-safe JavaScript for better developer experience
-- **🎨 Tailwind CSS 4** - Utility-first CSS framework for rapid UI development
+## Ringkasan
 
-### 🧩 UI Components & Styling
-- **🧩 shadcn/ui** - High-quality, accessible components built on Radix UI
-- **🎯 Lucide React** - Beautiful & consistent icon library
-- **🌈 Framer Motion** - Production-ready motion library for React
-- **🎨 Next Themes** - Perfect dark mode in 2 lines of code
+EclipGuardX adalah aplikasi Next.js (App Router) dengan server kustom (`server.ts`) yang menggabungkan Socket.IO. Database menggunakan Prisma dengan datasource SQLite (lihat `prisma/schema.prisma`).
 
-### 📋 Forms & Validation
-- **🎣 React Hook Form** - Performant forms with easy validation
-- **✅ Zod** - TypeScript-first schema validation
+## Prasyarat (contoh: Ubuntu 22.04+)
 
-### 🔄 State Management & Data Fetching
-- **🐻 Zustand** - Simple, scalable state management
-- **🔄 TanStack Query** - Powerful data synchronization for React
-- **🌐 Axios** - Promise-based HTTP client
+- Akses SSH ke server
+- Node.js 18+ (disarankan via NodeSource atau nvm)
+- npm (atau pnpm/yarn) — repo ini mengasumsikan `npm`
+- Git
+- Build tools (opsional): `build-essential` (untuk native addons jika diperlukan)
+- (Opsional) Nginx sebagai reverse proxy
 
-### 🗄️ Database & Backend
-- **🗄️ Prisma** - Next-generation Node.js and TypeScript ORM
-- **🔐 NextAuth.js** - Complete open-source authentication solution
-
-### 🎨 Advanced UI Features
-- **📊 TanStack Table** - Headless UI for building tables and datagrids
-- **🖱️ DND Kit** - Modern drag and drop toolkit for React
-- **📊 Recharts** - Redefined chart library built with React and D3
-- **🖼️ Sharp** - High performance image processing
-
-### 🌍 Internationalization & Utilities
-- **🌍 Next Intl** - Internationalization library for Next.js
-- **📅 Date-fns** - Modern JavaScript date utility library
-- **🪝 ReactUse** - Collection of essential React hooks for modern development
-
-## 🎯 Why This Scaffold?
-
-- **🏎️ Fast Development** - Pre-configured tooling and best practices
-- **🎨 Beautiful UI** - Complete shadcn/ui component library with advanced interactions
-- **🔒 Type Safety** - Full TypeScript configuration with Zod validation
-- **📱 Responsive** - Mobile-first design principles with smooth animations
-- **🗄️ Database Ready** - Prisma ORM configured for rapid backend development
-- **🔐 Auth Included** - NextAuth.js for secure authentication flows
-- **📊 Data Visualization** - Charts, tables, and drag-and-drop functionality
-- **🌍 i18n Ready** - Multi-language support with Next Intl
-- **🚀 Production Ready** - Optimized build and deployment settings
-- **🤖 AI-Friendly** - Structured codebase perfect for AI assistance
-
-## 🚀 Quick Start
+Contoh instalasi singkat:
 
 ```bash
-# Install dependencies
-npm install
+# update
+sudo apt update && sudo apt upgrade -y
 
-# Start development server
-npm run dev
+# install curl, git
+sudo apt install -y curl git
 
-# Build for production
+# Node.js 18 (NodeSource)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# (opsional) build tools
+sudo apt install -y build-essential
+```
+
+## Clone dan instalasi
+
+```bash
+# clone
+git clone https://github.com/syahrulrzk/EclipGuardX.git
+cd EclipGuardX
+
+# pasang dependencies
+npm ci
+```
+
+Catatan: repositori menggunakan `tsx` dan `nodemon` pada skrip dev; `tsx` sudah ada di `dependencies`.
+
+## Variabel lingkungan (ENV)
+
+Minimal variabel yang disarankan di server:
+
+- `DATABASE_URL` — untuk SQLite bisa `file:./dev.db` atau path absolut `file:/var/lib/eclipguardx/data.db`
+- `PORT` — port yang akan didengarkan oleh server (default 3000)
+- `NODE_ENV=production` — untuk mode produksi
+
+Buat file `.env` di root proyek (jika belum):
+
+```
+DATABASE_URL="file:./dev.db"
+PORT=3000
+NODE_ENV=production
+```
+
+Pastikan file tersebut hanya dapat dibaca oleh user aplikasi.
+
+## Database — Prisma
+
+Repositori menggunakan Prisma dengan provider `sqlite` (lihat `prisma/schema.prisma`). Langkah setup:
+
+```bash
+# (opsional) generate client
+npm run db:generate
+
+# push schema ke database (untuk sqlite, ini akan buat file DB)
+npm run db:push
+
+# jalankan seed (jika ada)
+
+```
+
+Catatan produksi: jika Anda menggunakan DB berbeda (Postgres/MySQL), ubah `DATABASE_URL` dan `prisma/schema.prisma` sesuai, lalu gunakan migrasi yang sesuai (`npx prisma migrate deploy` dll.).
+
+## Build & Run (Produksi)
+
+1. Build aplikasi Next.js:
+
+```bash
 npm run build
-
-# Start production server
-npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to see your application running.
+2. Jalankan server:
 
-## 🤖 Powered by Z.ai
+```bash
+# cara sederhana (foreground)
+NODE_ENV=production PORT=3000 npm run start
 
-This scaffold is optimized for use with [Z.ai](https://chat.z.ai) - your AI assistant for:
-
-- **💻 Code Generation** - Generate components, pages, and features instantly
-- **🎨 UI Development** - Create beautiful interfaces with AI assistance  
-- **🔧 Bug Fixing** - Identify and resolve issues with intelligent suggestions
-- **📝 Documentation** - Auto-generate comprehensive documentation
-- **🚀 Optimization** - Performance improvements and best practices
-
-Ready to build something amazing? Start chatting with Z.ai at [chat.z.ai](https://chat.z.ai) and experience the future of AI-powered development!
-
-## 📁 Project Structure
-
-```
-src/
-├── app/                 # Next.js App Router pages
-├── components/          # Reusable React components
-│   └── ui/             # shadcn/ui components
-├── hooks/              # Custom React hooks
-└── lib/                # Utility functions and configurations
+# atau gunakan env file, lalu systemd/pm2 (contoh di bawah)
 ```
 
-## 🎨 Available Features & Components
+Server kustom (`server.ts`) mendengarkan di `127.0.0.1:${PORT}`. Rekomendasi: gunakan reverse proxy (Nginx) yang melayani dari public dan meneruskan ke `127.0.0.1:3000`.
 
-This scaffold includes a comprehensive set of modern web development tools:
+## Contoh systemd service
 
-### 🧩 UI Components (shadcn/ui)
-- **Layout**: Card, Separator, Aspect Ratio, Resizable Panels
-- **Forms**: Input, Textarea, Select, Checkbox, Radio Group, Switch
-- **Feedback**: Alert, Toast (Sonner), Progress, Skeleton
-- **Navigation**: Breadcrumb, Menubar, Navigation Menu, Pagination
-- **Overlay**: Dialog, Sheet, Popover, Tooltip, Hover Card
-- **Data Display**: Badge, Avatar, Calendar
+Simpan sebagai `/etc/systemd/system/eclipguardx.service` (sesuaikan user, path proyek):
 
-### 📊 Advanced Data Features
-- **Tables**: Powerful data tables with sorting, filtering, pagination (TanStack Table)
-- **Charts**: Beautiful visualizations with Recharts
-- **Forms**: Type-safe forms with React Hook Form + Zod validation
+```
+[Unit]
+Description=EclipGuardX service
+After=network.target
 
-### 🎨 Interactive Features
-- **Animations**: Smooth micro-interactions with Framer Motion
-- **Drag & Drop**: Modern drag-and-drop functionality with DND Kit
-- **Theme Switching**: Built-in dark/light mode support
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/home/youruser/EclipGuardX
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=DATABASE_URL=file:/home/youruser/EclipGuardX/dev.db
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
 
-### 🔐 Backend Integration
-- **Authentication**: Ready-to-use auth flows with NextAuth.js
-- **Database**: Type-safe database operations with Prisma
-- **API Client**: HTTP requests with Axios + TanStack Query
-- **State Management**: Simple and scalable with Zustand
+[Install]
+WantedBy=multi-user.target
+```
 
-### 🌍 Production Features
-- **Internationalization**: Multi-language support with Next Intl
-- **Image Optimization**: Automatic image processing with Sharp
-- **Type Safety**: End-to-end TypeScript with Zod validation
-- **Essential Hooks**: 100+ useful React hooks with ReactUse for common patterns
+Setelah menambahkan file:
 
-## 🤝 Get Started with Z.ai
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now eclipguardx
+sudo journalctl -u eclipguardx -f
+```
 
-1. **Clone this scaffold** to jumpstart your project
-2. **Visit [chat.z.ai](https://chat.z.ai)** to access your AI coding assistant
-3. **Start building** with intelligent code generation and assistance
-4. **Deploy with confidence** using the production-ready setup
+## Contoh PM2 (alternatif)
+
+```bash
+# pasang pm2 jika belum
+sudo npm install -g pm2
+
+cd /home/youruser/EclipGuardX
+pm2 start "npm -- run start" --name eclipguardx --env production
+pm2 save
+pm2 monit
+```
+
+## Contoh konfigurasi Nginx (reverse proxy)
+
+```
+server {
+	listen 80;
+	server_name example.com;
+
+	location / {
+		proxy_pass http://127.0.0.1:3000;
+		proxy_http_version 1.1;
+		proxy_set_header Upgrade $http_upgrade;
+		proxy_set_header Connection 'upgrade';
+		proxy_set_header Host $host;
+		proxy_cache_bypass $http_upgrade;
+	}
+}
+```
+
+Setelah konfigurasi, reload nginx:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+## Logging & Debugging
+
+- Logs server (jika menggunakan systemd): `sudo journalctl -u eclipguardx -f`
+- Jika menjalankan manual: `server.log` dan `dev.log` dibuat oleh skrip (lihat skrip `dev` dan `start`).
+- Pastikan `DATABASE_URL` benar dan dapat ditulis (untuk sqlite: folder harus ada dan writable oleh proses).
+
+## Troubleshooting singkat
+
+- Error: database tidak ditemukan / permission denied -> periksa `DATABASE_URL` dan permission folder.
+- Next build gagal -> jalankan `npm run build` secara lokal untuk melihat error, cek versi Node.
+- Socket.IO tidak terkoneksi dari frontend -> periksa endpoint WS `ws://<host>:<port>/api/socketio` dan konfigurasi proxy (Upgrade header). Server kustom menggunakan path `/api/socketio`.
+
+## Ringkasan perintah cepat
+
+```bash
+git clone ...
+cd EclipGuardX
+npm ci
+cp .env.example .env   # jika ada, atau buat .env sesuai instruksi
+npm run db:generate
+npm run db:push
+npm run db:seed
+npm run build
+NODE_ENV=production PORT=3000 npm run start
+```
 
 ---
 
-Built with ❤️ for the developer community. Supercharged by [Z.ai](https://chat.z.ai) 🚀
+Jika mau, saya bisa:
+
+- Menambahkan file `.env.example` ke repo (jika belum ada)
+- Menambahkan contoh `Dockerfile` / `docker-compose.yml` untuk deployment berbasis container
+- Menghasilkan unit `systemd` terisi otomatis dengan path/user yang Anda inginkan
+
+Beritahu saya opsi mana yang mau Anda tambahkan, dan saya akan buatkan patch.

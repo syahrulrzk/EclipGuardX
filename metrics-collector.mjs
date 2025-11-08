@@ -194,26 +194,44 @@ class MetricsCollector {
       }
 
       // Store system metrics
+      const systemMetricsData = {
+        cpuUsage: isNaN(cpuUsage) ? 0 : cpuUsage,
+        cpuLoad1: loadAvgs[0],
+        cpuLoad5: loadAvgs[1],
+        cpuLoad15: loadAvgs[2],
+        ramUsed,
+        ramFree,
+        ramUsagePercent: isNaN(ramUsagePercent) ? 0 : ramUsagePercent,
+        ramTotal,
+        diskUsed,
+        diskFree,
+        diskUsagePercent: isNaN(diskUsagePercent) ? 0 : diskUsagePercent,
+        diskTotal,
+        networkIn,
+        networkOut
+      }
+      
       await prisma.systemMetric.create({
-        data: {
-          cpuUsage: isNaN(cpuUsage) ? 0 : cpuUsage,
-          cpuLoad1: loadAvgs[0],
-          cpuLoad5: loadAvgs[1],
-          cpuLoad15: loadAvgs[2],
-          ramUsed,
-          ramFree,
-          ramUsagePercent: isNaN(ramUsagePercent) ? 0 : ramUsagePercent,
-          ramTotal,
-          diskUsed,
-          diskFree,
-          diskUsagePercent: isNaN(diskUsagePercent) ? 0 : diskUsagePercent,
-          diskTotal,
-          networkIn,
-          networkOut
-        }
+        data: systemMetricsData
       })
 
       console.log(`Stored system metrics - CPU: ${cpuUsage.toFixed(1)}%, RAM: ${ramUsagePercent.toFixed(1)}%, Disk: ${diskUsagePercent.toFixed(1)}%`)
+
+      // Broadcast system metrics update via WebSocket
+      try {
+        await fetch('http://localhost:3000/api/metrics/broadcast', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: 'system_metrics',
+            metrics: systemMetricsData
+          })
+        })
+      } catch (error) {
+        console.warn(`Failed to broadcast system metrics:`, error.message)
+      }
 
     } catch (error) {
       console.error('Error collecting system metrics:', error)
@@ -365,20 +383,38 @@ class MetricsCollector {
       }
 
       // Store the metrics in database using the container's database ID
+      const metricData = {
+        containerId: container.id, // Use the database container ID, not the Docker ID
+        cpuUsage: isNaN(cpuUsage) ? 0 : cpuUsage,
+        memUsage: isNaN(memUsagePercent) ? 0 : memUsagePercent,
+        memLimit: memLimitMB,
+        netIn: netInBytes,
+        netOut: netOutBytes,
+        diskRead: diskReadBytes,
+        diskWrite: diskWriteBytes
+      }
+
       await prisma.containerMetric.create({
-        data: {
-          containerId: container.id, // Use the database ID, not the Docker ID
-          cpuUsage: isNaN(cpuUsage) ? 0 : cpuUsage,
-          memUsage: isNaN(memUsagePercent) ? 0 : memUsagePercent,
-          memLimit: memLimitMB,
-          netIn: netInBytes,
-          netOut: netOutBytes,
-          diskRead: diskReadBytes,
-          diskWrite: diskWriteBytes
-        }
+        data: metricData
       })
 
       console.log(`Stored metrics for container ${container.name} (${containerId}): CPU ${cpuUsage}%, Mem ${memUsagePercent}%`)
+
+      // Broadcast metrics update via WebSocket
+      try {
+        await fetch('http://localhost:3000/api/metrics/broadcast', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            containerId: containerId, // Use Docker container ID for broadcasting
+            metrics: metricData
+          })
+        })
+      } catch (error) {
+        console.warn(`Failed to broadcast metrics for container ${containerId}:`, error.message)
+      }
 
     } catch (error) {
       console.error(`Error collecting metrics for container ${containerId}:`, error)

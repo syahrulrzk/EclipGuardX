@@ -548,45 +548,7 @@ export default function ReportsPage() {
                       </div>
                     )}
 
-                    {reportType === 'performance' && (
-                      <Card className="bg-gray-700/30 border-gray-600">
-                        <CardHeader>
-                          <CardTitle className="text-gray-100">Container Performance</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-3 max-h-96 overflow-y-auto">
-                            {reportData.containerPerformance?.map((perf: any, index: number) => (
-                              <div key={index} className="p-4 bg-gray-800/50 rounded-lg">
-                                <div className="flex items-center justify-between mb-3">
-                                  <p className="text-sm font-medium text-gray-100">{perf.container}</p>
-                                  <Badge variant="outline" className="text-xs">
-                                    {perf.dataPoints} data points
-                                  </Badge>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4 text-sm">
-                                  <div>
-                                    <p className="text-gray-400">CPU Usage</p>
-                                    <p className="text-gray-100">Avg: {perf.avgCpu.toFixed(1)}% | Max: {perf.maxCpu.toFixed(1)}%</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-gray-400">Memory Usage</p>
-                                    <p className="text-gray-100">Avg: {perf.avgMemory.toFixed(1)}% | Max: {perf.maxMemory.toFixed(1)}%</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-gray-400">Network In</p>
-                                    <p className="text-gray-100">{formatBytes(perf.totalNetworkIn)}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-gray-400">Network Out</p>
-                                    <p className="text-gray-100">{formatBytes(perf.totalNetworkOut)}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )}
+                    {/* Container Performance report card removed per user request */}
                   </TabsContent>
 
                   <TabsContent value="raw" className="space-y-4">

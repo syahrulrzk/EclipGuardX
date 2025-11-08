@@ -10,7 +10,7 @@ interface UseSocketOptions {
 }
 
 export const useSocket = (options: UseSocketOptions = {}) => {
-  const { namespace = '', autoConnect = true } = options
+  const { namespace = '/metrics', autoConnect = true } = options
   const socketRef = useRef<Socket | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [lastMessage, setLastMessage] = useState<any>(null)

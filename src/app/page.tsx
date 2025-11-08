@@ -706,27 +706,6 @@ const Dashboard = memo(function Dashboard() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Container legend */}
-              <div className="mt-4 flex flex-wrap gap-3 text-xs">
-                {containerNames.map((containerName, index) => {
-                  const metrics = containerMetrics[containerName] || []
-                  const lastMetric = metrics[metrics.length - 1]
-                  const currentValue = lastMetric ? Math.round(lastMetric.cpuUsage) : 0
-                  return (
-                    <div key={containerName} className="flex items-center space-x-2">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: containerColors[index % containerColors.length] }}
-                      />
-                      <span className="text-gray-300">{containerName}:</span>
-                      <span className="text-gray-400">{currentValue}%</span>
-                    </div>
-                  )
-                })}
-                {containerMetricsLoading && (
-                  <span className="text-gray-500 ml-2">(updating...)</span>
-                )}
-              </div>
             </>
           ) : (
             <div className="text-center py-8">
@@ -866,27 +845,6 @@ const Dashboard = memo(function Dashboard() {
                 </ResponsiveContainer>
               </div>
 
-              {/* Container legend */}
-              <div className="mt-4 flex flex-wrap gap-3 text-xs">
-                {containerNames.map((containerName, index) => {
-                  const metrics = containerMetrics[containerName] || []
-                  const lastMetric = metrics[metrics.length - 1]
-                  const currentValue = lastMetric ? Math.round(lastMetric.memUsage) : 0
-                  return (
-                    <div key={containerName} className="flex items-center space-x-2">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: containerColors[index % containerColors.length] }}
-                      />
-                      <span className="text-gray-300">{containerName}:</span>
-                      <span className="text-gray-400">{currentValue}%</span>
-                    </div>
-                  )
-                })}
-                {containerMetricsLoading && (
-                  <span className="text-gray-500 ml-2">(updating...)</span>
-                )}
-              </div>
             </>
           ) : (
             <div className="text-center py-8">
